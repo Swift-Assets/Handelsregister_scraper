@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from handelsregister.pacing import CircuitBreaker
@@ -127,3 +128,67 @@ class TestDiagnosePage(unittest.TestCase):
         from handelsregister.portal import classify_page
         self.assertEqual(classify_page("Ihre Sitzung ist abgelaufen"), "session_expired")
         self.assertIsNone(classify_page("<html>ok</html>", 200))
+
+
+class TestPositiveEvidenceWins(unittest.TestCase):
+    """2026-09-19: this guard refused the portal's healthy welcome page three
+    times in a row. The portal ships an empty error panel on every page — the
+    words "Es ist ein Fehler aufgetreten" and "Fehler ID:" sit in the markup of
+    a perfectly working site, hidden, waiting for a real error. Reading the
+    source for those words rejects the entire portal, forever."""
+
+    REAL_SHAPE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fixtures", "welcome_with_hidden_error_panel.html")
+
+    def setUp(self):
+        from handelsregister.portal import EXPECT_WELCOME, diagnose_page
+        self.diagnose = diagnose_page
+        self.expect = EXPECT_WELCOME
+        with open(self.REAL_SHAPE, encoding="utf-8") as f:
+            self.page = f.read()
+
+    def test_the_page_that_broke_us_is_healthy_once_we_look_for_what_we_need(self):
+        d = self.diagnose(self.page, 200, expect=self.expect)
+        self.assertIsNone(d["kind"])
+        self.assertEqual(d["missing_expected"], [])
+        # The scary words are still there. They are simply not the question.
+        self.assertTrue(d["matched_markers"]["error"])
+
+    def test_without_that_rule_the_same_page_is_refused(self):
+        # Exactly the bug, pinned so it cannot come back unnoticed.
+        self.assertEqual(self.diagnose(self.page, 200)["kind"], "portal_error_page")
+
+    def test_hidden_markup_is_not_a_message_to_anyone(self):
+        # Visible text carries no error, so nothing is wrong — even with no
+        # positive expectation to lean on.
+        d = self.diagnose(self.page, 200, visible_text="Registerportal Startseite")
+        self.assertIsNone(d["kind"])
+        self.assertEqual(d["matched_on"], "visible text")
+
+    def test_a_real_error_page_is_still_caught(self):
+        broken = ("<html><body><div class='error-message'>"
+                  "Es ist ein Fehler aufgetreten!</div></body></html>")
+        d = self.diagnose(broken, 200,
+                          visible_text="Es ist ein Fehler aufgetreten!",
+                          expect=self.expect)
+        self.assertEqual(d["kind"], "portal_error_page")
+        self.assertIn("visible text", d["reason"])
+
+    def test_a_status_code_outranks_positive_evidence(self):
+        # 403 is 403 however friendly the body looks.
+        self.assertEqual(self.diagnose(self.page, 403, expect=self.expect)["kind"],
+                         "http_403")
+
+    def test_a_page_missing_what_we_came_for_is_named_as_such(self):
+        d = self.diagnose("<html><body>Willkommen</body></html>", 200,
+                          visible_text="Willkommen", expect=self.expect)
+        self.assertEqual(d["kind"], "unexpected_page")
+        self.assertEqual(d["missing_expected"], ["normaleSucheLink"])
+
+    def test_a_block_still_outranks_everything_below_the_status(self):
+        d = self.diagnose(self.page, 200, visible_text="Ihre IP wurde gesperrt",
+                          expect=self.expect)
+        self.assertIsNone(d["kind"], "a page that works is not a block page")
+        d2 = self.diagnose("<html>nothing we need</html>", 200,
+                           visible_text="Ihre IP wurde gesperrt", expect=self.expect)
+        self.assertEqual(d2["kind"], "ip_blocked")

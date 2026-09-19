@@ -168,6 +168,20 @@ The probe obeys the same budget gate as everything else, so it will refuse
 while a cooldown is open. Clearing that cooldown is a decision, not a
 formality — §6 says when it is justified.
 
+**Re-judging a saved page costs nothing at all.** Once a page is on disk, the
+guard can be run against it again with no portal request, no database and no
+budget:
+
+```bash
+su - hr -c '/home/hr/venv/bin/python -m handelsregister.probe --file /home/hr/evidence/<file>.html'
+```
+
+Use this to prove a change to the guard is right **before** it is allowed near
+the portal again. On 2026-09-19 the guard refused the portal's healthy welcome
+page three times in a row because the portal ships an empty error panel on
+every page; the fix was verified this way, at zero cost, before a single
+further request was sent.
+
 ## 6. When it goes red
 
 ```sql
