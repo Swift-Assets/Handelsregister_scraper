@@ -141,6 +141,33 @@ WantedBy=timers.target
 months is a signature. `Persistent=false` matters too — a machine that was off
 must not wake up and fire every missed run at once.
 
+## 5b. When the portal refuses: probe before you conclude
+
+A refusal names a kind — `portal_error_page`, `ip_blocked` — and that name alone
+cannot tell a portal that is down from a marker of ours matching ordinary text
+on a healthy page. Do not settle it by running the calibration again: that
+costs thirty requests and usually returns "inconclusive" a second time.
+
+Spend one request instead:
+
+```bash
+su - hr -c '/usr/local/bin/hr-probe'
+```
+
+It asks for the front page once, keeps the rendered HTML and a screenshot, and
+prints the HTTP status, the page title, its size, and the exact marker our
+guard matched. Then read the saved page:
+
+| what the evidence shows | what it means |
+|---|---|
+| a few hundred characters, or an error title | the portal really is refusing or down — wait it out |
+| a full page that merely contains one of our marker phrases | **our guard is too eager**; narrow the marker, do not widen the retry |
+| HTTP 403, or `gesperrt` in a small page | a block. Do not clear the cooldown; read §6 |
+
+The probe obeys the same budget gate as everything else, so it will refuse
+while a cooldown is open. Clearing that cooldown is a decision, not a
+formality — §6 says when it is justified.
+
 ## 6. When it goes red
 
 ```sql

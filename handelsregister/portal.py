@@ -14,6 +14,8 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 WELCOME = "https://www.handelsregister.de/rp_web/welcome.xhtml"
 
@@ -44,9 +46,13 @@ _TRIPLE_RE = re.compile(
 
 
 class PortalError(Exception):
-    def __init__(self, kind: str, message: str = "") -> None:
-        super().__init__(f"{kind}: {message}" if message else kind)
+    def __init__(self, kind: str, message: str = "",
+                 diagnosis: dict | None = None, evidence: str | None = None) -> None:
+        parts = [p for p in (message, f"evidence: {evidence}" if evidence else "") if p]
+        super().__init__(f"{kind}: {' | '.join(parts)}" if parts else kind)
         self.kind = kind
+        self.diagnosis = diagnosis or {}
+        self.evidence = evidence
 
 
 @dataclass
@@ -59,21 +65,42 @@ class SearchHit:
     registry_number: str | None = None
 
 
+def diagnose_page(html: str, status: int | None = None) -> dict:
+    """Pure. Says what is wrong with a page AND why we think so.
+
+    The "why" is the whole point. The first calibration run refused the portal
+    on its very first request and reported only "portal_error_page", which does
+    not distinguish a portal that is down from a marker of ours matching
+    ordinary text on a healthy page. A verdict without its evidence is not a
+    finding; it is a guess wearing a finding's clothes.
+    """
+    html = html or ""
+    matched = {
+        "block": [m for m in BLOCK_MARKERS if m in html],
+        "session": [m for m in SESSION_MARKERS if m in html],
+        "error": [m for m in ERROR_MARKERS if m in html],
+    }
+    kind = None
+    reason = None
+    if status == 403:
+        kind, reason = "http_403", "http status 403"
+    elif status == 429:
+        kind, reason = "http_429", "http status 429"
+    elif status is not None and status >= 500:
+        kind, reason = "portal_error_page", f"http status {status}"
+    elif matched["block"]:
+        kind, reason = "ip_blocked", f"page text contains {matched['block']}"
+    elif matched["session"]:
+        kind, reason = "session_expired", f"page text contains {matched['session']}"
+    elif matched["error"]:
+        kind, reason = "portal_error_page", f"page text contains {matched['error']}"
+    return {"kind": kind, "reason": reason, "http_status": status,
+            "matched_markers": matched, "html_chars": len(html)}
+
+
 def classify_page(html: str, status: int | None = None) -> str | None:
     """Pure: map a page or response to a failure kind, or None when healthy."""
-    if status == 403:
-        return "http_403"
-    if status == 429:
-        return "http_429"
-    if status is not None and status >= 500:
-        return "portal_error_page"
-    if any(m in html for m in BLOCK_MARKERS):
-        return "ip_blocked"
-    if any(m in html for m in SESSION_MARKERS):
-        return "session_expired"
-    if any(m in html for m in ERROR_MARKERS):
-        return "portal_error_page"
-    return None
+    return diagnose_page(html, status)["kind"]
 
 
 def parse_registry_triple(text: str) -> tuple[str | None, str | None, str | None]:
@@ -94,11 +121,14 @@ def jitter(base: float, spread: float = 0.35) -> float:
 
 class Portal:
     def __init__(self, user_agent: str, executable_path: str | None = None,
-                 headless: bool = True, min_delay_s: float = 4.0) -> None:
+                 headless: bool = True, min_delay_s: float = 4.0,
+                 evidence_dir: str | None = None) -> None:
         self.user_agent = user_agent
         self.executable_path = executable_path
         self.headless = headless
         self.min_delay_s = min_delay_s
+        self.evidence_dir = Path(evidence_dir) if evidence_dir else None
+        self.last_diagnosis: dict | None = None
         self._pw = self._browser = self._ctx = self._page = None
 
     # -- lifecycle ------------------------------------------------------------
@@ -126,16 +156,53 @@ class Portal:
     def _pause(self) -> None:
         time.sleep(jitter(self.min_delay_s))
 
+    def keep_evidence(self, label: str) -> str | None:
+        """Write the page we are looking at to disk: the rendered HTML and a
+        screenshot. Costs no portal request and is the difference between
+        knowing and assuming."""
+        if not self.evidence_dir:
+            return None
+        try:
+            self.evidence_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            base = self.evidence_dir / f"{stamp}-{label}"
+            base.with_suffix(".html").write_text(self._page.content(), encoding="utf-8")
+            try:
+                self._page.screenshot(path=str(base.with_suffix(".png")), full_page=True)
+            except Exception:
+                pass
+            return str(base.with_suffix(".html"))
+        except Exception:
+            return None
+
     def _check(self, status: int | None = None) -> None:
-        kind = classify_page(self._page.content(), status)
-        if kind:
-            raise PortalError(kind, self._page.url)
+        diagnosis = diagnose_page(self._page.content(), status)
+        diagnosis["url"] = self._page.url
+        try:
+            diagnosis["title"] = self._page.title()
+        except Exception:
+            diagnosis["title"] = None
+        self.last_diagnosis = diagnosis
+        if diagnosis["kind"]:
+            evidence = self.keep_evidence(diagnosis["kind"])
+            raise PortalError(diagnosis["kind"],
+                              f"{diagnosis['reason']} at {diagnosis['url']}",
+                              diagnosis=diagnosis, evidence=evidence)
 
     # -- steps ----------------------------------------------------------------
+    def open_welcome(self) -> int | None:
+        """Load the portal's front page and nothing else. Returns the HTTP
+        status. This is the smallest thing we can ask the portal, which makes
+        it the right probe when we need to know whether it is answering at
+        all."""
+        resp = self._page.goto(WELCOME, wait_until="networkidle", timeout=60_000)
+        status = resp.status if resp else None
+        self._check(status)
+        return status
+
     def open_search(self) -> None:
         """Counts as one request: the session has to be opened before anything."""
-        resp = self._page.goto(WELCOME, wait_until="networkidle", timeout=60_000)
-        self._check(resp.status if resp else None)
+        self.open_welcome()
         self._pause()
         self._page.click(SEL["normale_suche"])
         self._page.wait_for_selector(SEL["schlagwoerter"], timeout=30_000)
