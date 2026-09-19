@@ -9,9 +9,12 @@ class FakeResponse:
     def __init__(self, payload, status_code=200):
         self._payload = payload
         self.status_code = status_code
-        self.text = str(payload)
+        self.text = "" if payload is None else str(payload)
+        self.content = self.text.encode()
 
     def json(self):
+        if not self.content.strip():
+            raise requests.exceptions.JSONDecodeError("Expecting value", "", 0)
         return self._payload
 
 
@@ -103,6 +106,39 @@ class TestClaim(unittest.TestCase):
         self.assertEqual(payload["p_kind"], "document")
         self.assertEqual(payload["p_run_id"], "run-1")
         self.assertEqual(payload["p_entity_id"], "e-9")
+
+
+class TestVoidReplies(unittest.TestCase):
+    """registry_finish_request returns void, so PostgREST answers 204 with an
+    empty body. Asking that for JSON raises — which is how a healthy probe run
+    died on its very last line, after the portal work was done and the evidence
+    was already on disk."""
+
+    def test_an_empty_204_is_a_result_not_a_crash(self):
+        b = make([(None, 204)])
+        self.assertIsNone(b._rpc("registry_finish_request", {}))
+
+    def test_an_empty_200_is_also_fine(self):
+        b = make([(None, 200)])
+        self.assertIsNone(b._rpc("registry_finish_request", {}))
+
+    def test_finish_survives_a_void_reply(self):
+        b = make([(None, 204)])
+        b.finish("r-1", "ok")          # must not raise
+
+    def test_finish_survives_a_body_that_is_not_json(self):
+        b = make([("<html>gateway timeout</html>", 200)])
+        b.finish("r-1", "ok")          # must not raise
+
+    def test_a_claim_without_a_verdict_is_never_read_as_a_grant(self):
+        b = make([(None, 204)])
+        with self.assertRaises(BudgetUnavailable):
+            b.claim("search", log=lambda m: None)
+
+    def test_a_non_json_claim_reply_stops_the_run(self):
+        b = make([("<html>502</html>", 200)])
+        with self.assertRaises(BudgetUnavailable):
+            b.claim("search", log=lambda m: None)
 
 
 class TestReporting(unittest.TestCase):

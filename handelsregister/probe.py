@@ -60,10 +60,9 @@ def main(argv: list[str] | None = None) -> int:
             kept = exc.evidence
         diagnosis = portal.last_diagnosis or {}
 
-    budget.finish(request_id, "error" if error else "ok",
-                  http_status=diagnosis.get("http_status"),
-                  note=(error.kind if error else "welcome page ok"))
-
+    # Print the findings BEFORE anything else that can fail. The whole point
+    # of this run is the evidence; a bookkeeping call must never be able to
+    # stand between us and it.
     print("\n=== what the portal sent ===")
     print(f"http status : {diagnosis.get('http_status')}")
     print(f"final url   : {diagnosis.get('url')}")
@@ -74,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"because     : {diagnosis.get('reason') or 'no marker matched'}")
     print(f"markers hit : {json.dumps(diagnosis.get('matched_markers') or {}, ensure_ascii=False)}")
     print(f"evidence    : {kept}")
+
+    budget.finish(request_id, "error" if error else "ok",
+                  http_status=diagnosis.get("http_status"),
+                  note=(error.kind if error else "welcome page ok"))
 
     if diagnosis.get("kind"):
         print("\nRead the saved page before believing either story. A tiny page "

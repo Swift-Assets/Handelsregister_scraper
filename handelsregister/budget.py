@@ -63,15 +63,31 @@ class Budget:
             raise BudgetUnavailable(f"{name}: {exc}") from exc
         if r.status_code >= 400:
             raise BudgetUnavailable(f"{name}: HTTP {r.status_code} {r.text[:200]}")
-        return r.json()
+        # A function that returns void answers 204 with an empty body. Asking
+        # such a reply for JSON raises, which is how a healthy run died on its
+        # very last line: the portal work was done, the evidence was on disk,
+        # and reporting the outcome threw the whole thing away.
+        if r.status_code == 204 or not (r.content or b"").strip():
+            return None
+        try:
+            return r.json()
+        except ValueError as exc:
+            raise BudgetUnavailable(
+                f"{name}: reply was not JSON: {r.text[:200]!r}") from exc
 
     # -- the gate -------------------------------------------------------------
     def try_claim(self, kind: str, entity_id: str | None = None,
                   key: str | None = None) -> dict[str, Any]:
         """One attempt. Returns the gate's answer verbatim."""
-        return self._rpc("registry_claim_request", {
+        answer = self._rpc("registry_claim_request", {
             "p_source": self.source, "p_kind": kind,
             "p_entity_id": entity_id, "p_key": key, "p_run_id": self.run_id})
+        if not isinstance(answer, dict):
+            # No answer is not permission. Anything other than a real verdict
+            # stops the run rather than being read as a grant.
+            raise BudgetUnavailable(
+                f"registry_claim_request: expected a verdict, got {answer!r}")
+        return answer
 
     def claim(self, kind: str, entity_id: str | None = None,
               key: str | None = None, max_wait_s: float = 900.0,
@@ -107,11 +123,12 @@ class Budget:
             self._rpc("registry_finish_request", {
                 "p_request_id": request_id, "p_outcome": outcome,
                 "p_http_status": http_status, "p_note": note})
-        except BudgetUnavailable:
+        except Exception as exc:                       # noqa: BLE001 - deliberate
             # The request already happened and is already counted. Losing its
-            # outcome is a reporting loss, not a budget loss, so it must not
-            # abort a run that is otherwise behaving.
-            pass
+            # outcome is a reporting loss, not a budget loss, and must never
+            # abort a run that is otherwise behaving — least of all a run whose
+            # whole purpose was to collect evidence.
+            print(f"[budget] could not record the outcome ({exc}); continuing")
 
     def open_circuit(self, reason: str, minutes: int = 360) -> None:
         """Park the source in the database, so the next scheduled run finds the
@@ -119,8 +136,8 @@ class Budget:
         try:
             self._rpc("registry_open_circuit", {
                 "p_source": self.source, "p_reason": reason, "p_minutes": minutes})
-        except BudgetUnavailable:
-            pass
+        except Exception as exc:                       # noqa: BLE001 - deliberate
+            print(f"[budget] could not park the source ({exc}); continuing")
 
     def status(self) -> dict[str, Any]:
         return self._rpc("registry_budget_status", {"p_source": self.source})
