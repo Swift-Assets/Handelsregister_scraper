@@ -192,3 +192,41 @@ class TestPositiveEvidenceWins(unittest.TestCase):
         d2 = self.diagnose("<html>nothing we need</html>", 200,
                            visible_text="Ihre IP wurde gesperrt", expect=self.expect)
         self.assertEqual(d2["kind"], "ip_blocked")
+
+
+class TestSearchFormMustBeThere(unittest.TestCase):
+    """After a search the portal shows results, which carry no search field.
+    The first live run filled the form for company one, then timed out for
+    thirty seconds on company two waiting for a field that was never coming."""
+
+    class _Page:
+        def __init__(self, has_field=True, raises=False):
+            self.has_field, self.raises = has_field, raises
+
+        def query_selector(self, selector):
+            if self.raises:
+                raise RuntimeError("page is gone")
+            return object() if self.has_field else None
+
+    def _portal(self, page):
+        from handelsregister.portal import Portal
+        p = Portal.__new__(Portal)
+        p._page = page
+        return p
+
+    def test_the_form_is_seen_when_it_is_there(self):
+        self.assertTrue(self._portal(self._Page(True)).search_form_ready())
+
+    def test_the_form_is_not_seen_on_a_results_page(self):
+        self.assertFalse(self._portal(self._Page(False)).search_form_ready())
+
+    def test_a_dead_page_is_not_a_ready_form(self):
+        self.assertFalse(self._portal(self._Page(raises=True)).search_form_ready())
+
+    def test_searching_without_the_form_fails_fast_and_by_name(self):
+        from handelsregister.portal import PortalError
+        with self.assertRaises(PortalError) as cm:
+            self._portal(self._Page(False)).search("Beispiel GmbH")
+        self.assertEqual(cm.exception.kind, "search_form_missing")
+        # Not a thirty-second timeout deep inside the browser driver.
+        self.assertIn("open_search_form", str(cm.exception))

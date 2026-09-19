@@ -251,6 +251,23 @@ class Portal:
         self._page.wait_for_selector(SEL["schlagwoerter"], timeout=30_000)
         self._check(expect=EXPECT_SEARCH_FORM)
 
+    def search_form_ready(self) -> bool:
+        """Is the search form on the page right now? A DOM question, not a
+        request. After a search the portal shows the results page, which has no
+        search field — so every company after the first needs the form back."""
+        try:
+            return self._page.query_selector(SEL["schlagwoerter"]) is not None
+        except Exception:
+            return False
+
+    def open_search_form(self) -> None:
+        """One counted retrieval: navigate back to the search form from
+        wherever we are. The navigation link is on every page."""
+        self._pause()
+        self._page.click(SEL["normale_suche"])
+        self._page.wait_for_selector(SEL["schlagwoerter"], timeout=30_000)
+        self._check(expect=EXPECT_SEARCH_FORM)
+
     def court_options(self) -> list[str]:
         """Labels of the Registergericht select, read once per session. Reading
         a control already on the page is not a retrieval."""
@@ -283,6 +300,11 @@ class Portal:
         HRB 5407 exists in many of them — so a search that omits the court is a
         search that can return the wrong company.
         """
+        if not self.search_form_ready():
+            raise PortalError(
+                "search_form_missing",
+                "the search form is not on this page; call open_search_form() "
+                "first (and spend a request for it)")
         self._page.fill(SEL["schlagwoerter"], keywords or "")
         if register_number:
             self._set_optional(SEL["register_nummer"], register_number, as_select=False)
@@ -312,6 +334,7 @@ class Portal:
                  return Array.from(seen.values());
                }""")
 
+        self.keep_evidence("results")
         hits: list[SearchHit] = []
         for r in rows:
             text = r.get("text") or ""

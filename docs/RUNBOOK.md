@@ -141,6 +141,17 @@ WantedBy=timers.target
 months is a signature. `Persistent=false` matters too — a machine that was off
 must not wake up and fire every missed run at once.
 
+## 5a. What one company really costs
+
+Measured on the first live run: the portal's result page carries **no search
+field**, so every company after the first needs a navigation back to the form
+before it can be searched. Counted conservatively that is:
+
+    back to the form  +  search  +  document   =  3 requests per company
+
+not the 2 the Nutzungsordnung's own unit implies. The calibration prints
+`requests per company`; plan the backlog off that number and nothing else.
+
 ## 5b. When the portal refuses: probe before you conclude
 
 A refusal names a kind — `portal_error_page`, `ip_blocked` — and that name alone

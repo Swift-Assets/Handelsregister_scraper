@@ -44,6 +44,10 @@ def judge_saved_page(path: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:                       # so a pipe into tee does not hide the run
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(description="One request, maximum evidence")
     ap.add_argument("out_dir", nargs="?", default=EVIDENCE_DIR,
                     help="where to keep the page and the screenshot")
