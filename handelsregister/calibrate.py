@@ -149,6 +149,19 @@ def probe_company(portal, gate, entity, courts, aliases, out_dir, log) -> dict:
     if not label:
         log("[cal]   court could not be mapped to a portal option")
 
+    # After a search the portal shows results, which carry no search field.
+    # Getting the form back is a real navigation, so it is a real request.
+    if not portal.search_form_ready():
+        back = gate.claim("other", entity.get("registry_identity_key"))
+        try:
+            portal.open_search_form()
+        except PortalError as exc:
+            gate.finish(back, "error", note=exc.kind)
+            record["search"] = {"outcome": f"form_unreachable:{exc.kind}"}
+            return record
+        gate.finish(back, "ok", note="back to the search form")
+        record["returned_to_form"] = True
+
     request_id = gate.claim("search", entity.get("registry_identity_key"))
     try:
         hits = portal.search(
@@ -172,6 +185,14 @@ def probe_company(portal, gate, entity, courts, aliases, out_dir, log) -> dict:
     }
     log(f"[cal]   search: {len(hits)} hits, match={decision.reason}, "
         f"links={record['search']['document_kinds_offered']}")
+    log(f"[cal]   wanted : {entity_triple(entity)}")
+    log(f"[cal]   saw    : {[hit_triple(h) for h in hits]}")
+    for h in hits[:2]:
+        snippet = " / ".join(
+            ln.strip() for ln in (h.row_text or "").splitlines() if ln.strip())
+        log(f"[cal]   row    : {snippet[:220]}")
+    record["search"]["row_text_sample"] = [
+        (h.row_text or "")[:600] for h in hits[:2]]
     if not decision.accepted:
         return record
 
@@ -189,6 +210,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Registerportal calibration run")
     ap.add_argument("--limit", type=int, default=5,
                     help="companies from the queue, after the control (default 5)")
+    try:                       # so a pipe into tee does not hide the run
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     ap.add_argument("--no-control", action="store_true",
                     help="skip the known-good control company")
     ap.add_argument("--out", default="calibration",
@@ -262,6 +287,14 @@ def main(argv: list[str] | None = None) -> int:
                 except BudgetDenied as exc:
                     print(f"[cal] stopping: {exc}")
                     break
+                except Exception as exc:               # noqa: BLE001
+                    # One company that goes wrong is a finding about that
+                    # company, not a reason to throw away the whole run.
+                    print(f"[cal]   failed: {type(exc).__name__}: {exc}",
+                          file=sys.stderr)
+                    record = {"entity": {"display_name": entity.get("display_name")},
+                              "error": f"{type(exc).__name__}: {exc}"[:400],
+                              "documents": []}
                 record["requests"] = gate.spent - before
                 report["companies"].append(record)
     except BudgetDenied as exc:
@@ -278,6 +311,12 @@ def main(argv: list[str] | None = None) -> int:
         if exc.evidence:
             print(f"[cal] the page itself is saved at {exc.evidence}", file=sys.stderr)
         budget.open_circuit(f"calibration:{exc.kind}", 60)
+    except Exception as exc:                           # noqa: BLE001
+        # Third time this lesson has arrived today: whatever goes wrong, the
+        # findings are written. A run that dies with its evidence unwritten
+        # has cost requests and bought nothing.
+        print(f"[cal] run stopped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        report["fatal_error"] = f"{type(exc).__name__}: {exc}"[:400]
 
     done = [c for c in report["companies"] if c.get("requests")]
     delivered = [d for c in report["companies"] for d in c["documents"]
