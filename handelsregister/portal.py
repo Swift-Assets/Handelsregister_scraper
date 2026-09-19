@@ -30,7 +30,16 @@ SEL = {
     "results": "table[id*='ergebnis'], #ergebnissForm, .RegPortErg_AZ",
 }
 
+# Markers are matched against the page's VISIBLE text, never its source.
+# The portal ships a hidden error panel on every page — an empty "Fehler ID:"
+# and the sentence below, waiting to be filled in when something really goes
+# wrong. Searching the source for those words refuses every healthy page.
 ERROR_MARKERS = ("Fehler ID", "Es ist ein Fehler aufgetreten")
+
+# What a page must contain for us to call it the page we asked for. Presence of
+# what we need outranks the presence of words we fear.
+EXPECT_WELCOME = ("normaleSucheLink",)
+EXPECT_SEARCH_FORM = ("schlagwoerter",)
 SESSION_MARKERS = ("Ihre Sitzung ist abgelaufen", "Sitzung ist abgelaufen")
 BLOCK_MARKERS = ("gesperrt", "zu viele Anfragen", "Too Many Requests",
                  "Zugriff verweigert")
@@ -65,21 +74,34 @@ class SearchHit:
     registry_number: str | None = None
 
 
-def diagnose_page(html: str, status: int | None = None) -> dict:
+def diagnose_page(html: str, status: int | None = None,
+                  visible_text: str | None = None,
+                  expect: tuple[str, ...] = ()) -> dict:
     """Pure. Says what is wrong with a page AND why we think so.
 
-    The "why" is the whole point. The first calibration run refused the portal
-    on its very first request and reported only "portal_error_page", which does
-    not distinguish a portal that is down from a marker of ours matching
-    ordinary text on a healthy page. A verdict without its evidence is not a
-    finding; it is a guess wearing a finding's clothes.
+    Two rules, learned the hard way on 2026-09-19 when this guard refused the
+    portal's perfectly healthy welcome page three times in a row:
+
+    1. **Accept on positive evidence.** If the page carries what we came for —
+       the link, the form, the results — it is the page we asked for, whatever
+       else it also contains. The portal ships a hidden, empty error panel on
+       every single page; a guard that reads the source for the word "Fehler"
+       will reject the whole portal forever.
+    2. **Match markers against visible text, not source.** Hidden template
+       markup is not a message to the user, and must not be read as one.
+
+    An HTTP status still outranks both: 403 is 403 whatever the body says.
     """
     html = html or ""
+    haystack = html if visible_text is None else visible_text
     matched = {
-        "block": [m for m in BLOCK_MARKERS if m in html],
-        "session": [m for m in SESSION_MARKERS if m in html],
-        "error": [m for m in ERROR_MARKERS if m in html],
+        "block": [m for m in BLOCK_MARKERS if m in haystack],
+        "session": [m for m in SESSION_MARKERS if m in haystack],
+        "error": [m for m in ERROR_MARKERS if m in haystack],
     }
+    missing = [m for m in expect if m not in html]
+    found_expected = bool(expect) and not missing
+
     kind = None
     reason = None
     if status == 403:
@@ -88,19 +110,29 @@ def diagnose_page(html: str, status: int | None = None) -> dict:
         kind, reason = "http_429", "http status 429"
     elif status is not None and status >= 500:
         kind, reason = "portal_error_page", f"http status {status}"
+    elif found_expected:
+        kind, reason = None, None          # positive evidence wins
     elif matched["block"]:
-        kind, reason = "ip_blocked", f"page text contains {matched['block']}"
+        kind, reason = "ip_blocked", f"visible text contains {matched['block']}"
     elif matched["session"]:
-        kind, reason = "session_expired", f"page text contains {matched['session']}"
+        kind, reason = "session_expired", f"visible text contains {matched['session']}"
     elif matched["error"]:
-        kind, reason = "portal_error_page", f"page text contains {matched['error']}"
+        kind, reason = "portal_error_page", f"visible text contains {matched['error']}"
+    elif missing:
+        kind, reason = "unexpected_page", f"page does not contain {missing}"
     return {"kind": kind, "reason": reason, "http_status": status,
-            "matched_markers": matched, "html_chars": len(html)}
+            "matched_markers": matched, "html_chars": len(html),
+            "expected": list(expect), "missing_expected": missing,
+            "matched_on": "source" if visible_text is None else "visible text"}
 
 
 def classify_page(html: str, status: int | None = None) -> str | None:
     """Pure: map a page or response to a failure kind, or None when healthy."""
     return diagnose_page(html, status)["kind"]
+
+
+FATAL_KINDS = ("http_403", "http_429", "ip_blocked", "portal_error_page",
+               "session_expired", "unexpected_page")
 
 
 def parse_registry_triple(text: str) -> tuple[str | None, str | None, str | None]:
@@ -175,8 +207,19 @@ class Portal:
         except Exception:
             return None
 
-    def _check(self, status: int | None = None) -> None:
-        diagnosis = diagnose_page(self._page.content(), status)
+    def _visible_text(self) -> str | None:
+        """What a person would actually read on this page. Hidden template
+        markup is not a message to anyone and must not be read as one."""
+        try:
+            return self._page.inner_text("body")
+        except Exception:
+            return None
+
+    def _check(self, status: int | None = None,
+               expect: tuple[str, ...] = ()) -> None:
+        diagnosis = diagnose_page(self._page.content(), status,
+                                  visible_text=self._visible_text(),
+                                  expect=expect)
         diagnosis["url"] = self._page.url
         try:
             diagnosis["title"] = self._page.title()
@@ -197,7 +240,7 @@ class Portal:
         all."""
         resp = self._page.goto(WELCOME, wait_until="networkidle", timeout=60_000)
         status = resp.status if resp else None
-        self._check(status)
+        self._check(status, expect=EXPECT_WELCOME)
         return status
 
     def open_search(self) -> None:
@@ -206,7 +249,7 @@ class Portal:
         self._pause()
         self._page.click(SEL["normale_suche"])
         self._page.wait_for_selector(SEL["schlagwoerter"], timeout=30_000)
-        self._check()
+        self._check(expect=EXPECT_SEARCH_FORM)
 
     def court_options(self) -> list[str]:
         """Labels of the Registergericht select, read once per session. Reading

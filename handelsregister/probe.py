@@ -15,19 +15,44 @@ way. It writes nothing to the product tables.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
 
 from .budget import Budget, BudgetDenied, BudgetUnavailable
 from .config import ConfigError, load
-from .portal import Portal, PortalError
+from .portal import EXPECT_WELCOME, Portal, PortalError, diagnose_page
 
 EVIDENCE_DIR = "/home/hr/evidence"
 
 
+def judge_saved_page(path: str) -> int:
+    """Re-run the guard against a page already on disk. No portal request, no
+    database, no budget — so a change to the guard can be proved right before
+    it is ever allowed near the portal again."""
+    html = Path(path).read_text(encoding="utf-8", errors="replace")
+    d = diagnose_page(html, 200, expect=EXPECT_WELCOME)
+    print(f"file        : {path}")
+    print(f"size        : {d['html_chars']} characters")
+    print(f"expected    : {d['expected']}")
+    print(f"missing     : {d['missing_expected'] or 'nothing'}")
+    print(f"markers hit : {json.dumps(d['matched_markers'], ensure_ascii=False)}")
+    print(f"verdict     : {d['kind'] or 'healthy'}")
+    print(f"because     : {d['reason'] or 'the page carries what we came for'}")
+    return 0 if not d["kind"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
-    out_dir = (argv or sys.argv[1:] or [EVIDENCE_DIR])[0]
+    ap = argparse.ArgumentParser(description="One request, maximum evidence")
+    ap.add_argument("out_dir", nargs="?", default=EVIDENCE_DIR,
+                    help="where to keep the page and the screenshot")
+    ap.add_argument("--file", help="judge a page already saved on disk and "
+                                   "send nothing to the portal")
+    args = ap.parse_args(argv)
+    if args.file:
+        return judge_saved_page(args.file)
+    out_dir = args.out_dir
     try:
         settings = load()
     except ConfigError as exc:
