@@ -82,3 +82,48 @@ class TestParseRegistryTriple(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiagnosePage(unittest.TestCase):
+    """A verdict must carry its reason. The first live calibration returned
+    'portal_error_page' and nothing else, which cannot tell a portal that is
+    down from a marker of ours matching ordinary text."""
+
+    def setUp(self):
+        from handelsregister.portal import diagnose_page
+        self.diagnose = diagnose_page
+
+    def test_a_healthy_page_says_so_and_names_no_marker(self):
+        d = self.diagnose("<html><body>Registerportal</body></html>", 200)
+        self.assertIsNone(d["kind"])
+        self.assertIsNone(d["reason"])
+        self.assertEqual(d["matched_markers"],
+                         {"block": [], "session": [], "error": []})
+
+    def test_a_status_code_is_reported_as_the_reason(self):
+        for status, kind in ((403, "http_403"), (429, "http_429"),
+                             (500, "portal_error_page"), (503, "portal_error_page")):
+            d = self.diagnose("", status)
+            self.assertEqual(d["kind"], kind)
+            self.assertIn(str(status), d["reason"])
+
+    def test_the_exact_marker_that_matched_is_named(self):
+        d = self.diagnose("<p>Es ist ein Fehler aufgetreten</p>", 200)
+        self.assertEqual(d["kind"], "portal_error_page")
+        self.assertIn("Es ist ein Fehler aufgetreten", d["reason"])
+        self.assertEqual(d["matched_markers"]["error"], ["Es ist ein Fehler aufgetreten"])
+
+    def test_page_size_travels_with_the_verdict(self):
+        # A few hundred characters is the portal refusing us; a full page that
+        # merely contains a marker phrase is our own guard being too eager.
+        d = self.diagnose("x" * 412, 200)
+        self.assertEqual(d["html_chars"], 412)
+
+    def test_a_block_outranks_an_error_marker(self):
+        d = self.diagnose("Zugriff verweigert. Es ist ein Fehler aufgetreten", 200)
+        self.assertEqual(d["kind"], "ip_blocked")
+
+    def test_classify_page_still_answers_the_old_way(self):
+        from handelsregister.portal import classify_page
+        self.assertEqual(classify_page("Ihre Sitzung ist abgelaufen"), "session_expired")
+        self.assertIsNone(classify_page("<html>ok</html>", 200))

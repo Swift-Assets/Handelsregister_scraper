@@ -237,9 +237,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with Portal(user_agent=settings.user_agent,
                     executable_path=settings.chromium_path,
-                    headless=settings.headless) as portal:
+                    headless=settings.headless,
+                    evidence_dir=str(out_dir / "evidence")) as portal:
             request_id = gate.claim("session_open")
-            portal.open_search()
+            try:
+                portal.open_search()
+            except PortalError as exc:
+                # Close the ledger row before unwinding: a request whose outcome
+                # is never written reads as still in flight forever.
+                gate.finish(request_id, "error", note=exc.kind)
+                report["portal_diagnosis"] = exc.diagnosis
+                report["evidence"] = exc.evidence
+                raise
             gate.finish(request_id, "ok")
             courts = portal.court_options()
             report["court_options_seen"] = len(courts)
@@ -260,6 +269,14 @@ def main(argv: list[str] | None = None) -> int:
     except PortalError as exc:
         print(f"[cal] portal: {exc}", file=sys.stderr)
         report["portal_error"] = exc.kind
+        report.setdefault("portal_diagnosis", exc.diagnosis)
+        report.setdefault("evidence", exc.evidence)
+        if exc.diagnosis:
+            print(f"[cal] why: {exc.diagnosis.get('reason')}", file=sys.stderr)
+            print(f"[cal] page: {exc.diagnosis.get('html_chars')} chars, "
+                  f"title={exc.diagnosis.get('title')!r}", file=sys.stderr)
+        if exc.evidence:
+            print(f"[cal] the page itself is saved at {exc.evidence}", file=sys.stderr)
         budget.open_circuit(f"calibration:{exc.kind}", 60)
 
     done = [c for c in report["companies"] if c.get("requests")]
