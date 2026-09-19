@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Explicit, and read-only. A workflow without a permissions block silently
+# takes the repository default, which may be read-write.
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (no browser — these tests never touch the network)
+        run: pip install "requests==2.32.3"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -v
+
+  migration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply the migration and run its behavioural test
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f migrations/0000_test_stubs.sql
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f migrations/0001_registry_budget_and_ledger.sql
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f migrations/0001_test.sql
+
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The invariants, checked as text
+        run: |
+          set -e
+          # No process may set its own cap. The name may appear in exactly one
+          # place, config.py, and only to refuse it.
+          stray=$(grep -rn --include='*.py' "HR_RATE_PER_HOUR" handelsregister/ \
+                  | grep -v '^handelsregister/config.py:' || true)
+          if [ -n "$stray" ]; then
+            echo "::error::a local rate override reappeared; the cap lives in the database"
+            echo "$stray"
+            exit 1
+          fi
+          grep -q "HR_RATE_PER_HOUR is no longer read" handelsregister/config.py
+          # The calibration ceiling is a number in code, not a setting.
+          grep -q "HARD_MAX_REQUESTS = 30" handelsregister/calibrate.py
+          # The redactor is a whitelist.
+          grep -q "ALLOWED_PERSON_TAGS" handelsregister/xjustiz.py
+          echo "invariants ok"

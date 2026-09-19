@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tns:nachricht.reg.0400003 xmlns:tns="http://www.xjustiz.de" xmlns:din91379="urn:xoev-de:kosit:xoev-datentyp:din91379">
+  <tns:grunddaten>
+    <tns:verfahrensdaten>
+      <tns:beteiligung>
+        <tns:beteiligter>
+          <tns:auswahl_beteiligter>
+            <tns:organisation>
+              <tns:bezeichnung><tns:bezeichnung.aktuell>Beispiel Bau GmbH</tns:bezeichnung.aktuell></tns:bezeichnung>
+              <tns:rechtsform>Gesellschaft mit beschränkter Haftung</tns:rechtsform>
+              <tns:sitz><tns:ort>Solingen</tns:ort></tns:sitz>
+              <tns:anschrift>
+                <tns:strasse>Musterstraße</tns:strasse><tns:hausnummer>12</tns:hausnummer>
+                <tns:postleitzahl>42651</tns:postleitzahl><tns:ort>Solingen</tns:ort>
+              </tns:anschrift>
+            </tns:organisation>
+          </tns:auswahl_beteiligter>
+        </tns:beteiligter>
+        <tns:beteiligter>
+          <tns:auswahl_beteiligter>
+            <tns:natuerlichePerson>
+              <tns:vollerName><tns:vorname>Erika</tns:vorname><tns:nachname>Musterfrau</tns:nachname></tns:vollerName>
+              <tns:geburt><tns:geburtsdatum>1970-01-01</tns:geburtsdatum></tns:geburt>
+            </tns:natuerlichePerson>
+          </tns:auswahl_beteiligter>
+        </tns:beteiligter>
+      </tns:beteiligung>
+    </tns:verfahrensdaten>
+  </tns:grunddaten>
+  <tns:fachdatenRegister>
+    <tns:basisdatenRegister>
+      <tns:gegenstand>Die Ausführung von Hochbau- und Tiefbauarbeiten aller Art. Der Handel mit Baustoffen. Die Beteiligung an anderen Unternehmen.</tns:gegenstand>
+      <tns:statusRechtstraeger>aktuell</tns:statusRechtstraeger>
+      <tns:zusatzGmbH><tns:stammkapital><tns:zahl>25000</tns:zahl><tns:waehrung>EUR</tns:waehrung></tns:stammkapital></tns:zusatzGmbH>
+    </tns:basisdatenRegister>
+    <tns:registergericht>Wuppertal</tns:registergericht>
+    <tns:registerart>HRB</tns:registerart>
+    <tns:registernummer>37064</tns:registernummer>
+  </tns:fachdatenRegister>
+</tns:nachricht.reg.0400003>
