@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from .normalize import _fold, norm_registry_number_v2, norm_registry_type
 
 METHOD_TRIPLE = "registry_triple"
+METHOD_PORTAL_FILTERED = "portal_filtered_single_hit"
 METHOD_UNIQUE_NAME = "unique_name_no_triple"
 
 # German transliteration BEFORE accent folding: the portal writes "Müller" and
@@ -125,7 +126,21 @@ def _courts_agree(a: str, b: str) -> bool:
     return a.startswith(b + " ") or b.startswith(a + " ")
 
 
-def pick_hit(hits, entity: dict, document_kind: str = "SI") -> MatchResult:
+def search_was_constrained(filters: dict | None) -> bool:
+    """Did the portal itself filter by the register triple?
+
+    Measured 2026-09-20: a result row reads "<name>  <seat city>  aktuell"
+    and carries no court and no register number at all. So the row can never
+    confirm the triple — but the FORM can, because we send court, register
+    type and number as search fields. When the portal answers such a query
+    with exactly one row, the portal has done the matching for us.
+    """
+    f = filters or {}
+    return bool(f.get("register_number")) and bool(f.get("court"))
+
+
+def pick_hit(hits, entity: dict, document_kind: str = "SI",
+             search_filters: dict | None = None) -> MatchResult:
     """Choose the row that is this entity, or refuse and say why."""
     usable = [h for h in (hits or []) if getattr(h, "document_links", None)
               and document_kind in h.document_links]
@@ -146,14 +161,50 @@ def pick_hit(hits, entity: dict, document_kind: str = "SI") -> MatchResult:
             return MatchResult(matches[0], METHOD_TRIPLE, "ok")
         if len(matches) > 1:
             return MatchResult(None, None, "ambiguous_triple")
+
+        # No row states a triple — the normal case on this portal. Fall back to
+        # what the portal was asked: a court- and number-constrained query that
+        # returned exactly one row, whose name agrees with ours.
+        if not any(hit_triple(h) for h in usable):
+            if not search_was_constrained(search_filters):
+                return MatchResult(None, None, "search_not_constrained")
+            if len(usable) > 1:
+                return MatchResult(None, None, "ambiguous_portal_filtered")
+            if _names_agree(entity, usable[0]):
+                return MatchResult(usable[0], METHOD_PORTAL_FILTERED, "ok")
+            return MatchResult(None, None, "name_mismatch")
         return MatchResult(None, None, "no_triple_match")
 
     # No triple on our side — the ~1 % of companies whose announcement never
     # named a register. One candidate and an agreeing name, or nothing.
     if len(usable) == 1:
-        want_name = fold_name(entity.get("display_name"))
-        got_name = fold_name(getattr(usable[0], "company_name", ""))
-        if want_name and got_name and want_name == got_name:
+        if _names_agree(entity, usable[0]):
             return MatchResult(usable[0], METHOD_UNIQUE_NAME, "ok")
         return MatchResult(None, None, "name_mismatch")
     return MatchResult(None, None, "ambiguous_no_triple")
+
+
+def _names_agree(entity: dict, hit) -> bool:
+    want = fold_name(entity.get("display_name"))
+    got = fold_name(getattr(hit, "company_name", ""))
+    return bool(want) and bool(got) and want == got
+
+
+def verify_against_document(entity: dict, profile) -> tuple[bool, str]:
+    """The last word on identity, and the only one that is not circumstantial.
+
+    An SI document states its own Registergericht, Registerart and
+    Registernummer. Comparing those with the entity's is proof, where a search
+    result is only inference. Returns (ok, reason).
+    """
+    want = entity_triple(entity)
+    got = _triple(getattr(profile, "registergericht", None),
+                  getattr(profile, "registerart", None),
+                  getattr(profile, "registernummer", None))
+    if not want:
+        return True, "entity has no triple to compare"
+    if not got:
+        return True, "document states no triple"
+    if got[1] == want[1] and got[2] == want[2] and _courts_agree(got[0], want[0]):
+        return True, "document confirms the register entry"
+    return False, f"document says {got}, entity says {want}"

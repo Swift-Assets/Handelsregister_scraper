@@ -37,7 +37,8 @@ from pathlib import Path
 
 from .budget import Budget, BudgetDenied, BudgetUnavailable
 from .config import ConfigError, load
-from .matching import entity_triple, hit_triple, pick_hit
+from .matching import (entity_triple, hit_triple, pick_hit,
+                       verify_against_document)
 from .normalize import load_court_aliases, norm_registry_number_v2, portal_court_label
 from .portal import Portal, PortalError
 from .store import Store
@@ -113,6 +114,10 @@ def _probe_document(portal, gate, hit, kind, entity, out_dir, log) -> dict:
             result["saved"] = str(path)
             result["redaction_rule"] = rule
             profile = parse_si(raw)
+            ok, why = verify_against_document(entity, profile)
+            result["identity_confirmed"] = ok
+            result["identity_reason"] = why
+            log(f"[cal]   identity: {'confirmed' if ok else 'REJECTED'} — {why}")
             result["purpose_found"] = profile.has_purpose()
             result["purpose_chars"] = len(profile.gegenstand or "")
             result["fields"] = {k: bool(v) for k, v in {
@@ -175,9 +180,10 @@ def probe_company(portal, gate, entity, courts, aliases, out_dir, log) -> dict:
         return record
     gate.finish(request_id, "ok", note=f"{len(hits)} hits")
 
-    decision = pick_hit(hits, entity, "SI")
+    decision = pick_hit(hits, entity, "SI", portal.last_search_filters)
     record["search"] = {
         "outcome": "ok", "hits": len(hits),
+        "filters_the_form_accepted": dict(portal.last_search_filters),
         "document_kinds_offered": sorted({k for h in hits for k in h.document_links}),
         "wanted_triple": entity_triple(entity),
         "seen_triples": [hit_triple(h) for h in hits],
@@ -185,6 +191,7 @@ def probe_company(portal, gate, entity, courts, aliases, out_dir, log) -> dict:
     }
     log(f"[cal]   search: {len(hits)} hits, match={decision.reason}, "
         f"links={record['search']['document_kinds_offered']}")
+    log(f"[cal]   filters: {portal.last_search_filters}")
     log(f"[cal]   wanted : {entity_triple(entity)}")
     log(f"[cal]   saw    : {[hit_triple(h) for h in hits]}")
     for h in hits[:2]:
@@ -319,8 +326,9 @@ def main(argv: list[str] | None = None) -> int:
         report["fatal_error"] = f"{type(exc).__name__}: {exc}"[:400]
 
     done = [c for c in report["companies"] if c.get("requests")]
-    delivered = [d for c in report["companies"] for d in c["documents"]
-                 if d.get("outcome") == "delivered"]
+    attempts = [d for c in report["companies"] for d in c.get("documents", [])]
+    tried = [d for d in attempts if d.get("outcome") != "no_link_offered"]
+    delivered = [d for d in attempts if d.get("outcome") == "delivered"]
     with_purpose = [d for d in delivered if d.get("purpose_found")]
     report.update({
         "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -329,8 +337,14 @@ def main(argv: list[str] | None = None) -> int:
         "documents_delivered": len(delivered),
         "documents_with_purpose": len(with_purpose),
         "requests_per_company": round(gate.spent / len(done), 2) if done else None,
+        "document_attempts": len(tried),
+        # A name is a claim about what happened. "no_document_content" must
+        # mean we asked and got an empty shell — not that matching refused
+        # every hit and we never asked at all.
         "verdict": ("purpose_reachable" if with_purpose else
-                    "no_document_content" if done else "inconclusive"),
+                    "documents_without_purpose" if delivered else
+                    "no_document_content" if tried else
+                    "never_reached_a_document" if done else "inconclusive"),
     })
     (out_dir / f"calibration-{settings.run_id}.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -339,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"requests spent          : {report['requests_spent']} / {HARD_MAX_REQUESTS}")
     print(f"companies probed        : {report['companies_probed']}")
     print(f"requests per company    : {report['requests_per_company']}")
+    print(f"document attempts       : {report['document_attempts']}")
     print(f"documents delivered     : {report['documents_delivered']}")
     print(f"documents with a purpose: {report['documents_with_purpose']}")
     print(f"verdict                 : {report['verdict']}")
