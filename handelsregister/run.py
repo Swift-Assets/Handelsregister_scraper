@@ -26,7 +26,7 @@ import sys
 
 from .budget import Budget, BudgetDenied, BudgetUnavailable
 from .config import ConfigError, load
-from .matching import pick_hit, verify_against_document
+from .matching import pick_hit, search_was_constrained, verify_against_document
 from .normalize import load_court_aliases, norm_registry_number_v2, portal_court_label
 from .pacing import CircuitBreaker
 from .portal import Portal, PortalError
@@ -86,7 +86,9 @@ def process_one(portal, store, budget, breaker, entity, court_label,
         breaker.failure(kind)
         return kind
 
-    confirmed, why = verify_against_document(entity, profile)
+    confirmed, why = verify_against_document(
+        entity, profile,
+        require_positive=not search_was_constrained(portal.last_search_filters))
     if not confirmed:
         # The document says it belongs to another register entry. Storing it
         # would attach one company's purpose to another, and the fill-only

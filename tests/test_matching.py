@@ -133,10 +133,16 @@ class TestPortalFilteredMatch(unittest.TestCase):
         self.assertFalse(r.accepted)
         self.assertEqual(r.reason, "search_not_constrained")
 
-    def test_a_field_the_form_silently_refused_is_not_a_constraint(self):
+    def test_a_field_the_form_silently_refused_downgrades_the_match(self):
+        # The court field is a PrimeFaces widget that can refuse a value
+        # without saying so. When it does, the hit is still usable — but as a
+        # CANDIDATE under the weaker method, never as the strong one, and the
+        # document then has to confirm it positively before anything is kept.
+        from handelsregister.matching import METHOD_NUMBER_AND_NAME
         half = dict(CONSTRAINED, court=False)
-        self.assertEqual(pick_hit([self._row()], ENTITY, "SI", half).reason,
-                         "search_not_constrained")
+        r = pick_hit([self._row()], ENTITY, "SI", half)
+        self.assertTrue(r.accepted)
+        self.assertEqual(r.method, METHOD_NUMBER_AND_NAME)
 
     def test_two_rows_are_ambiguous_even_when_constrained(self):
         r = pick_hit([self._row(), self._row("Andere GmbH")], ENTITY, "SI", CONSTRAINED)
@@ -180,3 +186,50 @@ class TestDocumentIsTheProof(unittest.TestCase):
         ok, why = verify_against_document(ENTITY, _Profile())
         self.assertTrue(ok)
         self.assertIn("states no triple", why)
+
+
+NUMBER_ONLY = {"keywords": True, "register_number": True,
+               "register_type": False, "court": False}
+
+
+class TestNumberWithoutCourt(unittest.TestCase):
+    """Measured 2026-09-20: the court and register-type fields are PrimeFaces
+    widgets that silently refused to take a value, so the live search went out
+    with name and number only. A register number is not unique across courts,
+    so that hit is a candidate — never a conclusion."""
+
+    def _row(self, name="Beispiel Bau GmbH"):
+        return Hit(name, None, None, None)
+
+    def test_number_and_name_alone_buy_a_candidate(self):
+        from handelsregister.matching import METHOD_NUMBER_AND_NAME
+        r = pick_hit([self._row()], ENTITY, "SI", NUMBER_ONLY)
+        self.assertTrue(r.accepted)
+        self.assertEqual(r.method, METHOD_NUMBER_AND_NAME,
+                         "a weaker match must not be labelled as the strong one")
+
+    def test_with_the_court_it_is_the_strong_match(self):
+        from handelsregister.matching import METHOD_PORTAL_FILTERED
+        self.assertEqual(pick_hit([self._row()], ENTITY, "SI", CONSTRAINED).method,
+                         METHOD_PORTAL_FILTERED)
+
+    def test_no_number_at_all_is_still_refused(self):
+        self.assertEqual(pick_hit([self._row()], ENTITY, "SI", NAME_ONLY).reason,
+                         "search_not_constrained")
+
+    def test_a_silent_document_cannot_confirm_a_weak_match(self):
+        from handelsregister.matching import verify_against_document
+        ok, why = verify_against_document(ENTITY, _Profile(), require_positive=True)
+        self.assertFalse(ok)
+        self.assertIn("not narrowed to a court", why)
+
+    def test_a_silent_document_is_tolerated_after_a_strong_match(self):
+        from handelsregister.matching import verify_against_document
+        ok, _ = verify_against_document(ENTITY, _Profile(), require_positive=False)
+        self.assertTrue(ok)
+
+    def test_a_wrong_document_is_refused_however_the_match_was_made(self):
+        from handelsregister.matching import verify_against_document
+        wrong = _Profile("Berlin", "HRB", "37064")
+        for strict in (True, False):
+            self.assertFalse(verify_against_document(ENTITY, wrong, strict)[0])

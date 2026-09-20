@@ -280,16 +280,58 @@ class Portal:
             return []
 
     def _set_optional(self, selector: str, value: str, as_select: bool) -> bool:
+        """Set a field and PROVE it took. Returns False when the value did not
+        actually land, so the caller knows the query was not constrained.
+
+        Measured 2026-09-20: the court and register-type fields are PrimeFaces
+        widgets that keep the real <select> hidden behind decoration. Playwright
+        refuses to act on a hidden control and the old code swallowed that
+        silently, turning a precise query into a name search with nobody the
+        wiser. force=True acts on it anyway; the read-back is what makes that
+        safe rather than hopeful.
+        """
         try:
             if not self._page.query_selector(selector):
                 return False
-            if as_select:
-                self._page.select_option(selector, label=value)
-            else:
+            if not as_select:
                 self._page.fill(selector, value)
-            return True
+                return (self._page.input_value(selector) or "").strip() == value.strip()
+            try:
+                self._page.select_option(selector, label=value, timeout=5_000)
+            except Exception:
+                self._page.select_option(selector, label=value, force=True, timeout=5_000)
+            chosen = self._page.eval_on_selector(
+                selector,
+                "el => el.selectedIndex >= 0 "
+                "? (el.options[el.selectedIndex].textContent || '').trim() : ''")
+            return (chosen or "").strip() == value.strip()
         except Exception:
             return False
+
+    def describe_search_controls(self) -> dict:
+        """What the court and register-type controls actually are. A DOM
+        question — no request — and the difference between fixing this and
+        guessing at it again."""
+        script = """(sel) => {
+            const out = [];
+            for (const el of document.querySelectorAll(sel)) {
+                const r = el.getBoundingClientRect();
+                out.push({tag: el.tagName.toLowerCase(), id: el.id || null,
+                          options: el.tagName.toLowerCase() === 'select'
+                                   ? el.options.length : null,
+                          cls: (el.className || '').slice(0, 80),
+                          visible: r.width > 0 && r.height > 0});
+            }
+            return out;
+        }"""
+        found = {}
+        for name, sel in (("registerArt", "[id*='registerArt']"),
+                          ("registergericht", "[id*='registergericht']")):
+            try:
+                found[name] = self._page.evaluate(script, sel)
+            except Exception as exc:
+                found[name] = [{"error": str(exc)[:120]}]
+        return found
 
     def search(self, keywords: str, register_number: str | None = None,
                register_type: str | None = None,

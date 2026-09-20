@@ -19,6 +19,7 @@ from .normalize import _fold, norm_registry_number_v2, norm_registry_type
 
 METHOD_TRIPLE = "registry_triple"
 METHOD_PORTAL_FILTERED = "portal_filtered_single_hit"
+METHOD_NUMBER_AND_NAME = "number_and_name_single_hit"
 METHOD_UNIQUE_NAME = "unique_name_no_triple"
 
 # German transliteration BEFORE accent folding: the portal writes "Müller" and
@@ -127,16 +128,24 @@ def _courts_agree(a: str, b: str) -> bool:
 
 
 def search_was_constrained(filters: dict | None) -> bool:
-    """Did the portal itself filter by the register triple?
+    """The strong case: the portal filtered by BOTH court and register number,
+    so one row can only be this company.
 
-    Measured 2026-09-20: a result row reads "<name>  <seat city>  aktuell"
-    and carries no court and no register number at all. So the row can never
-    confirm the triple — but the FORM can, because we send court, register
-    type and number as search fields. When the portal answers such a query
-    with exactly one row, the portal has done the matching for us.
+    Measured 2026-09-20: a result row reads "<name>  <seat city>  aktuell" and
+    carries no court and no register number at all. The row can never confirm
+    the triple — the FORM can, because court, register type and number are
+    search fields.
     """
     f = filters or {}
     return bool(f.get("register_number")) and bool(f.get("court"))
+
+
+def search_had_a_number(filters: dict | None) -> bool:
+    """The weaker case: the number went in but the court did not. A register
+    number is not unique across courts, so a single hit here is a CANDIDATE,
+    never a conclusion — the document has to confirm it before anything is
+    stored."""
+    return bool((filters or {}).get("register_number"))
 
 
 def pick_hit(hits, entity: dict, document_kind: str = "SI",
@@ -166,13 +175,18 @@ def pick_hit(hits, entity: dict, document_kind: str = "SI",
         # what the portal was asked: a court- and number-constrained query that
         # returned exactly one row, whose name agrees with ours.
         if not any(hit_triple(h) for h in usable):
-            if not search_was_constrained(search_filters):
+            if not search_had_a_number(search_filters):
                 return MatchResult(None, None, "search_not_constrained")
             if len(usable) > 1:
                 return MatchResult(None, None, "ambiguous_portal_filtered")
-            if _names_agree(entity, usable[0]):
+            if not _names_agree(entity, usable[0]):
+                return MatchResult(None, None, "name_mismatch")
+            if search_was_constrained(search_filters):
                 return MatchResult(usable[0], METHOD_PORTAL_FILTERED, "ok")
-            return MatchResult(None, None, "name_mismatch")
+            # Number and name only. Good enough to spend one document on;
+            # never good enough to store. verify_against_document() decides,
+            # and with require_positive it will not accept a silent document.
+            return MatchResult(usable[0], METHOD_NUMBER_AND_NAME, "ok")
         return MatchResult(None, None, "no_triple_match")
 
     # No triple on our side — the ~1 % of companies whose announcement never
@@ -190,12 +204,17 @@ def _names_agree(entity: dict, hit) -> bool:
     return bool(want) and bool(got) and want == got
 
 
-def verify_against_document(entity: dict, profile) -> tuple[bool, str]:
+def verify_against_document(entity: dict, profile,
+                            require_positive: bool = False) -> tuple[bool, str]:
     """The last word on identity, and the only one that is not circumstantial.
 
     An SI document states its own Registergericht, Registerart and
     Registernummer. Comparing those with the entity's is proof, where a search
     result is only inference. Returns (ok, reason).
+
+    ``require_positive`` is for the weak match: when the search could not be
+    narrowed to a court, a document that says nothing about its own register
+    is not permission to store it.
     """
     want = entity_triple(entity)
     got = _triple(getattr(profile, "registergericht", None),
@@ -204,6 +223,9 @@ def verify_against_document(entity: dict, profile) -> tuple[bool, str]:
     if not want:
         return True, "entity has no triple to compare"
     if not got:
+        if require_positive:
+            return False, "document states no register entry, and the search "\
+                          "was not narrowed to a court — nothing confirms this"
         return True, "document states no triple"
     if got[1] == want[1] and got[2] == want[2] and _courts_agree(got[0], want[0]):
         return True, "document confirms the register entry"

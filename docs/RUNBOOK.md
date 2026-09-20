@@ -141,6 +141,23 @@ WantedBy=timers.target
 months is a signature. `Persistent=false` matters too — a machine that was off
 must not wake up and fire every missed run at once.
 
+## 5a1. The court field can refuse a value silently
+
+Court and register type are PrimeFaces widgets: the real `<select>` is hidden
+behind decoration, and a driver that respects visibility skips it without a
+word. The live run on 2026-09-20 went out with name and number only and nobody
+would have known — the console now prints what the form ACCEPTED:
+
+```
+filters: {'keywords': True, 'register_number': True, 'register_type': False, 'court': False}
+```
+
+Every field is now set and then **read back**; `True` means the value is really
+in the control. If `court` reads `False`, the match is downgraded to a
+candidate and the document must confirm it positively. The calibration also
+prints what those two controls actually are (tag, id, option count, whether
+they are visible) at session start, for free.
+
 ## 5a2. How a hit is confirmed
 
 A result row on this portal reads `<name>  <seat city>  aktuell` — **no court,
