@@ -179,10 +179,17 @@ def pick_hit(hits, entity: dict, document_kind: str = "SI",
                 return MatchResult(None, None, "search_not_constrained")
             if len(usable) > 1:
                 return MatchResult(None, None, "ambiguous_portal_filtered")
-            if not _names_agree(entity, usable[0]):
-                return MatchResult(None, None, "name_mismatch")
+            agree = _names_agree(entity, usable[0])
             if search_was_constrained(search_filters):
-                return MatchResult(usable[0], METHOD_PORTAL_FILTERED, "ok")
+                # Court + register type + number IS the register identity, and
+                # the portal answered it with one row. That row is the register
+                # entry whatever its name column reads: names drift, are
+                # abbreviated, or arrive glued to a city. The disagreement is
+                # recorded, and the document still has the last word.
+                return MatchResult(usable[0], METHOD_PORTAL_FILTERED,
+                                   "ok" if agree else "ok_name_differs")
+            if not agree:
+                return MatchResult(None, None, "name_mismatch")
             # Number and name only. Good enough to spend one document on;
             # never good enough to store. verify_against_document() decides,
             # and with require_positive it will not accept a silent document.
