@@ -38,7 +38,7 @@ from pathlib import Path
 from .budget import Budget, BudgetDenied, BudgetUnavailable
 from .config import ConfigError, load
 from .matching import (entity_triple, hit_triple, pick_hit,
-                       verify_against_document)
+                       search_was_constrained, verify_against_document)
 from .normalize import load_court_aliases, norm_registry_number_v2, portal_court_label
 from .portal import Portal, PortalError
 from .store import Store
@@ -114,7 +114,9 @@ def _probe_document(portal, gate, hit, kind, entity, out_dir, log) -> dict:
             result["saved"] = str(path)
             result["redaction_rule"] = rule
             profile = parse_si(raw)
-            ok, why = verify_against_document(entity, profile)
+            ok, why = verify_against_document(
+                entity, profile,
+                require_positive=not search_was_constrained(portal.last_search_filters))
             result["identity_confirmed"] = ok
             result["identity_reason"] = why
             log(f"[cal]   identity: {'confirmed' if ok else 'REJECTED'} — {why}")
@@ -284,7 +286,11 @@ def main(argv: list[str] | None = None) -> int:
             gate.finish(request_id, "ok")
             courts = portal.court_options()
             report["court_options_seen"] = len(courts)
+            report["search_controls"] = portal.describe_search_controls()
+            portal.keep_evidence("search-form")
             print(f"[cal] session open · {len(courts)} court options on the form")
+            for name, found in report["search_controls"].items():
+                print(f"[cal] control {name}: {found}")
 
             for entity in targets:
                 before = gate.spent
