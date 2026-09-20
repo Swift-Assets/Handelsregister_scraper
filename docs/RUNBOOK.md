@@ -141,6 +141,20 @@ WantedBy=timers.target
 months is a signature. `Persistent=false` matters too — a machine that was off
 must not wake up and fire every missed run at once.
 
+## 5a2. How a hit is confirmed
+
+A result row on this portal reads `<name>  <seat city>  aktuell` — **no court,
+no register number**. So the row can never prove identity. Two things do:
+
+1. **The form.** Court, register type and number are search fields. One row
+   from a query constrained by court AND number is the portal matching for us.
+   The worker records which fields the form actually accepted; a field that
+   silently failed to set turns a precise query into a name search, and a
+   name search alone is never accepted.
+2. **The document.** An SI states its own Registergericht, Registerart and
+   Registernummer. That comparison is proof, and it runs after every download.
+   A document that names another register entry is refused and never stored.
+
 ## 5a. What one company really costs
 
 Measured on the first live run: the portal's result page carries **no search

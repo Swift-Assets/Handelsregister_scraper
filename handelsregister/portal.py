@@ -161,6 +161,7 @@ class Portal:
         self.min_delay_s = min_delay_s
         self.evidence_dir = Path(evidence_dir) if evidence_dir else None
         self.last_diagnosis: dict | None = None
+        self.last_search_filters: dict = {}
         self._pw = self._browser = self._ctx = self._page = None
 
     # -- lifecycle ------------------------------------------------------------
@@ -306,13 +307,22 @@ class Portal:
                 "the search form is not on this page; call open_search_form() "
                 "first (and spend a request for it)")
         self._page.fill(SEL["schlagwoerter"], keywords or "")
+        applied = {"keywords": bool(keywords), "register_number": False,
+                   "register_type": False, "court": False}
         if register_number:
-            self._set_optional(SEL["register_nummer"], register_number, as_select=False)
+            applied["register_number"] = self._set_optional(
+                SEL["register_nummer"], register_number, as_select=False)
         if register_type:
-            self._set_optional(SEL["register_art"], register_type.upper(), as_select=True)
+            applied["register_type"] = self._set_optional(
+                SEL["register_art"], register_type.upper(), as_select=True)
         if court_label:
-            if not self._set_optional(SEL["gericht_select"], court_label, as_select=True):
-                self._set_optional(SEL["gericht_input"], court_label, as_select=False)
+            applied["court"] = (
+                self._set_optional(SEL["gericht_select"], court_label, as_select=True)
+                or self._set_optional(SEL["gericht_input"], court_label, as_select=False))
+        # What the portal was actually asked is not the same as what we meant
+        # to ask it. A field that silently failed to set turns a precise query
+        # into a name search, and we would never know.
+        self.last_search_filters = applied
 
         self._pause()
         self._page.click(SEL["btn_suche"])

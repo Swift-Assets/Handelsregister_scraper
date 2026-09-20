@@ -98,3 +98,85 @@ class TestPickHit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _Profile:
+    def __init__(self, court=None, art=None, number=None):
+        self.registergericht, self.registerart, self.registernummer = court, art, number
+
+
+CONSTRAINED = {"keywords": True, "register_number": True,
+               "register_type": True, "court": True}
+NAME_ONLY = {"keywords": True, "register_number": False,
+             "register_type": False, "court": False}
+
+
+class TestPortalFilteredMatch(unittest.TestCase):
+    """Measured on the live portal 2026-09-20: a result row reads
+    "<name>  <seat city>  aktuell" and states no court and no register number.
+    The row can never confirm the triple. The FORM can — court, register type
+    and number are search fields — so one row from a constrained query is the
+    portal doing the matching for us."""
+
+    def _row(self, name="Beispiel Bau GmbH"):
+        return Hit(name, None, None, None)          # no triple, as in real life
+
+    def test_one_row_from_a_constrained_query_is_accepted(self):
+        from handelsregister.matching import METHOD_PORTAL_FILTERED
+        r = pick_hit([self._row()], ENTITY, "SI", CONSTRAINED)
+        self.assertTrue(r.accepted)
+        self.assertEqual(r.method, METHOD_PORTAL_FILTERED)
+
+    def test_a_name_search_alone_is_never_enough(self):
+        # Without the court, an HRB number is not unique. Refuse.
+        r = pick_hit([self._row()], ENTITY, "SI", NAME_ONLY)
+        self.assertFalse(r.accepted)
+        self.assertEqual(r.reason, "search_not_constrained")
+
+    def test_a_field_the_form_silently_refused_is_not_a_constraint(self):
+        half = dict(CONSTRAINED, court=False)
+        self.assertEqual(pick_hit([self._row()], ENTITY, "SI", half).reason,
+                         "search_not_constrained")
+
+    def test_two_rows_are_ambiguous_even_when_constrained(self):
+        r = pick_hit([self._row(), self._row("Andere GmbH")], ENTITY, "SI", CONSTRAINED)
+        self.assertEqual(r.reason, "ambiguous_portal_filtered")
+
+    def test_a_different_company_is_refused(self):
+        r = pick_hit([self._row("Ganz Andere GmbH")], ENTITY, "SI", CONSTRAINED)
+        self.assertEqual(r.reason, "name_mismatch")
+
+    def test_a_row_that_does_state_a_triple_is_still_judged_on_it(self):
+        from handelsregister.matching import METHOD_TRIPLE
+        good = Hit("Beispiel Bau GmbH", "Wuppertal", "HRB", "37064")
+        self.assertEqual(pick_hit([good], ENTITY, "SI", CONSTRAINED).method,
+                         METHOD_TRIPLE)
+        wrong = Hit("Beispiel Bau GmbH", "Berlin", "HRB", "37064")
+        self.assertFalse(pick_hit([wrong], ENTITY, "SI", CONSTRAINED).accepted)
+
+
+class TestDocumentIsTheProof(unittest.TestCase):
+    """A search result is inference. The document states its own register
+    entry, and that is the only non-circumstantial evidence we get."""
+
+    def test_the_document_confirms_the_entry(self):
+        from handelsregister.matching import verify_against_document
+        ok, why = verify_against_document(ENTITY, _Profile("Wuppertal", "HRB", "37064"))
+        self.assertTrue(ok, why)
+
+    def test_a_document_for_another_company_is_rejected(self):
+        from handelsregister.matching import verify_against_document
+        ok, why = verify_against_document(ENTITY, _Profile("Berlin", "HRB", "37064"))
+        self.assertFalse(ok)
+        self.assertIn("entity says", why)
+
+    def test_a_different_number_is_rejected(self):
+        from handelsregister.matching import verify_against_document
+        ok, _ = verify_against_document(ENTITY, _Profile("Wuppertal", "HRB", "99999"))
+        self.assertFalse(ok)
+
+    def test_a_silent_document_is_not_evidence_against_us(self):
+        from handelsregister.matching import verify_against_document
+        ok, why = verify_against_document(ENTITY, _Profile())
+        self.assertTrue(ok)
+        self.assertIn("states no triple", why)

@@ -26,7 +26,7 @@ import sys
 
 from .budget import Budget, BudgetDenied, BudgetUnavailable
 from .config import ConfigError, load
-from .matching import pick_hit
+from .matching import pick_hit, verify_against_document
 from .normalize import load_court_aliases, norm_registry_number_v2, portal_court_label
 from .pacing import CircuitBreaker
 from .portal import Portal, PortalError
@@ -57,7 +57,7 @@ def process_one(portal, store, budget, breaker, entity, court_label,
         return exc.kind
     budget.finish(req, "ok", note=f"{len(hits)} hits")
 
-    decision = pick_hit(hits, entity, DOCUMENT_KIND)
+    decision = pick_hit(hits, entity, DOCUMENT_KIND, portal.last_search_filters)
     if not decision.accepted:
         if not settings.dry_run:
             store.record_failure(entity, "search_no_result", decision.reason,
@@ -85,6 +85,16 @@ def process_one(portal, store, budget, breaker, entity, court_label,
             store.record_failure(entity, "document_attempt", kind, str(exc))
         breaker.failure(kind)
         return kind
+
+    confirmed, why = verify_against_document(entity, profile)
+    if not confirmed:
+        # The document says it belongs to another register entry. Storing it
+        # would attach one company's purpose to another, and the fill-only
+        # write downstream freezes that forever.
+        if not settings.dry_run:
+            store.record_failure(entity, "document_attempt", "identity_mismatch", why)
+        breaker.success()
+        return "identity_mismatch"
 
     breaker.success()
     if not profile.is_usable():
