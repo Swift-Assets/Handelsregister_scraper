@@ -160,6 +160,17 @@ they are visible) at session start, for free.
 
 ## 5a2. How a hit is confirmed
 
+A row's first LINE is `name  seat city  aktuell` — three columns run together.
+The company name is read from its own **cell**, never from that line.
+
+And when the query carried court AND register number (both read back as
+accepted), one row answering it **is** the register entry: that triple is the
+identity itself. A name column that disagrees is recorded (`ok_name_differs`)
+rather than treated as a veto — companies get renamed and our display name can
+be the stale one. Without the court, the name is still a veto.
+
+### The old §5a2
+
 A result row on this portal reads `<name>  <seat city>  aktuell` — **no court,
 no register number**. So the row can never prove identity. Two things do:
 

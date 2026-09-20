@@ -148,8 +148,17 @@ class TestPortalFilteredMatch(unittest.TestCase):
         r = pick_hit([self._row(), self._row("Andere GmbH")], ENTITY, "SI", CONSTRAINED)
         self.assertEqual(r.reason, "ambiguous_portal_filtered")
 
-    def test_a_different_company_is_refused(self):
+    def test_a_different_name_under_a_full_constraint_is_recorded_not_refused(self):
+        # Court + type + number IS the register identity. One row answering
+        # that query is the register entry even if its name column disagrees —
+        # companies get renamed, and our display name can be the stale one.
+        # The disagreement is recorded and the document still has the last word.
         r = pick_hit([self._row("Ganz Andere GmbH")], ENTITY, "SI", CONSTRAINED)
+        self.assertTrue(r.accepted)
+        self.assertEqual(r.reason, "ok_name_differs")
+
+    def test_a_different_company_is_refused_without_the_court(self):
+        r = pick_hit([self._row("Ganz Andere GmbH")], ENTITY, "SI", NUMBER_ONLY)
         self.assertEqual(r.reason, "name_mismatch")
 
     def test_a_row_that_does_state_a_triple_is_still_judged_on_it(self):
@@ -233,3 +242,33 @@ class TestNumberWithoutCourt(unittest.TestCase):
         wrong = _Profile("Berlin", "HRB", "37064")
         for strict in (True, False):
             self.assertFalse(verify_against_document(ENTITY, wrong, strict)[0])
+
+
+class TestNameComesFromItsOwnCell(unittest.TestCase):
+    """Measured 2026-09-20: the row's first LINE is
+    "ASB GmbH\\tBobingen\\taktuell" — name, seat city and status run together.
+    Compared against "ASB GmbH" it never matches, and four correct hits were
+    refused for it."""
+
+    def test_a_name_glued_to_a_city_does_not_equal_the_name(self):
+        self.assertNotEqual(fold_name("ASB GmbH\tBobingen\taktuell"),
+                            fold_name("ASB GmbH"))
+
+    def test_a_fully_constrained_query_is_not_vetoed_by_the_name_column(self):
+        from handelsregister.matching import METHOD_PORTAL_FILTERED
+        glued = Hit("ASB GmbH\tBobingen\taktuell", None, None, None)
+        r = pick_hit([glued], ENTITY, "SI", CONSTRAINED)
+        self.assertTrue(r.accepted)
+        self.assertEqual(r.method, METHOD_PORTAL_FILTERED)
+        self.assertEqual(r.reason, "ok_name_differs",
+                         "the disagreement must be recorded, not hidden")
+
+    def test_without_the_court_the_name_still_vetoes(self):
+        glued = Hit("ASB GmbH\tBobingen\taktuell", None, None, None)
+        self.assertEqual(pick_hit([glued], ENTITY, "SI", NUMBER_ONLY).reason,
+                         "name_mismatch")
+
+    def test_an_agreeing_name_reports_plain_ok(self):
+        r = pick_hit([Hit("Beispiel Bau GmbH", None, None, None)],
+                     ENTITY, "SI", CONSTRAINED)
+        self.assertEqual(r.reason, "ok")

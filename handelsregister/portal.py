@@ -13,7 +13,7 @@ from __future__ import annotations
 import random
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -69,6 +69,7 @@ class SearchHit:
     company_name: str
     row_text: str
     document_links: dict[str, str]           # "SI" -> element id
+    cells: list[str] = field(default_factory=list)
     registry_court: str | None = None
     registry_type: str | None = None
     registry_number: str | None = None
@@ -380,7 +381,15 @@ class Portal:
                    if (!kinds.includes(label)) continue;
                    const row = a.closest('tr') || a.parentElement;
                    if (!row) continue;
-                   if (!seen.has(row)) seen.set(row, {text: (row.innerText || ''), links: {}});
+                   if (!seen.has(row)) seen.set(row, {
+                     text: (row.innerText || ''),
+                     // The name lives in its own cell. The row's first LINE is
+                     // name + seat city + status run together, which is not a
+                     // company name and never compares equal to one.
+                     cells: Array.from(row.querySelectorAll('td,th'))
+                                 .map(c => (c.innerText || '').trim())
+                                 .filter(Boolean),
+                     links: {}});
                    if (a.id) seen.get(row).links[label] = a.id;
                  }
                  return Array.from(seen.values());
@@ -390,9 +399,11 @@ class Portal:
         hits: list[SearchHit] = []
         for r in rows:
             text = r.get("text") or ""
-            first_line = next((ln.strip() for ln in text.split("\n") if ln.strip()), "")
+            cells = [c for c in (r.get("cells") or []) if c]
+            name = cells[0] if cells else next(
+                (ln.strip() for ln in text.split("\n") if ln.strip()), "")
             court, rtype, number = parse_registry_triple(text)
-            hits.append(SearchHit(company_name=first_line, row_text=text,
+            hits.append(SearchHit(company_name=name, row_text=text, cells=cells,
                                   document_links=r.get("links") or {},
                                   registry_court=court, registry_type=rtype,
                                   registry_number=number))
